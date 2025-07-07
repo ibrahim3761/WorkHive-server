@@ -27,6 +27,23 @@ async function run() {
     const usersCollection = client.db("workHive").collection("users");
 
     // user  api
+    // GET /best-workers
+    app.get("/best-workers", async (req, res) => {
+      try {
+        const workers = await usersCollection
+          .find({ role: "Worker" })
+          .sort({ coins: -1 })
+          .limit(6)
+          .project({ name: 1, email: 1, photo: 1, coins: 1 })
+          .toArray();
+
+        res.json(workers);
+      } catch (error) {
+        console.error("Error fetching best workers:", error);
+        res.status(500).json({ message: "Internal server error" });
+      }
+    });
+
     // ✅ GET /users/:email - Fetch a single user by email
     app.get("/users/:email", async (req, res) => {
       try {
