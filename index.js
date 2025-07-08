@@ -1,6 +1,7 @@
 const express = require("express");
 const cors = require("cors");
 require("dotenv").config();
+const stripe = require("stripe")(process.env.PAYMENT_GATEWAY_KEY);
 const app = express();
 const port = process.env.PORT || 3000;
 const { MongoClient, ServerApiVersion } = require("mongodb");
@@ -25,6 +26,7 @@ async function run() {
     await client.connect();
 
     const usersCollection = client.db("workHive").collection("users");
+    const paymentcollection = client.db("workHive").collection("payments");
 
     // user  api
     // GET /best-workers
@@ -66,12 +68,20 @@ async function run() {
     app.post("/users", async (req, res) => {
       try {
         const { name, email, photo, role, created_at, last_log_in } = req.body;
+        const now = new Date().toISOString();
 
         // Check if user already exists
         const existingUser = await usersCollection.findOne({ email });
 
         if (existingUser) {
-          return res.status(409).json({ message: "User already exists" });
+          await usersCollection.updateOne(
+            { email },
+            { $set: { last_log_in: now } }
+          );
+
+          return res
+            .status(200)
+            .json({ message: "User already exists", inserted: false });
         }
 
         // Assign coins based on role
@@ -97,6 +107,43 @@ async function run() {
         console.error("Error creating user:", error);
         res.status(500).json({ message: "Internal server error" });
       }
+    });
+
+    // payment api
+    app.post("/payments", async (req, res) => {
+      const { email, coinsPurchased, amountPaid, transactionId, date } =
+        req.body;
+
+      const paymentData = {
+        email,
+        coinsPurchased,
+        amountPaid,
+        transactionId,
+        date,
+      };
+
+      const paymentRes = await paymentcollection.insertOne(paymentData);
+
+      const userUpdate = await usersCollection.updateOne(
+        { email },
+        { $inc: { coins: coinsPurchased } }
+      );
+
+      res.send({ success: true, paymentRes, userUpdate });
+    });
+
+    app.post("/create-payment-intent", async (req, res) => {
+      const { amount } = req.body;
+
+      const paymentIntent = await stripe.paymentIntents.create({
+        amount,
+        currency: "usd",
+        payment_method_types: ["card"],
+      });
+
+      res.send({
+        clientSecret: paymentIntent.client_secret,
+      });
     });
 
     // Send a ping to confirm a successful connection
