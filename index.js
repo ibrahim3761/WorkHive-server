@@ -4,7 +4,7 @@ require("dotenv").config();
 const stripe = require("stripe")(process.env.PAYMENT_GATEWAY_KEY);
 const app = express();
 const port = process.env.PORT || 3000;
-const { MongoClient, ServerApiVersion } = require("mongodb");
+const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
 app.use(cors());
 app.use(express.json());
@@ -27,7 +27,10 @@ async function run() {
 
     const usersCollection = client.db("workHive").collection("users");
     const paymentcollection = client.db("workHive").collection("payments");
-
+    const tasksCollection = client.db("workHive").collection("tasks");
+    const submissionsCollection = client
+      .db("workHive")
+      .collection("submission");
     // user  api
     // GET /best-workers
     app.get("/best-workers", async (req, res) => {
@@ -108,18 +111,74 @@ async function run() {
         res.status(500).json({ message: "Internal server error" });
       }
     });
-    app.patch("/users/deduct-coins", async (req, res) => {
-      const { email, amount } = req.body;
 
-      const updateRes = await usersCollection.updateOne(
+    app.patch("/users/deduct-coins", async (req, res) => {
+      const { email, amount, taskId, coins } = req.body;
+
+      if (!email || !amount) {
+        return res.status(400).send({ message: "Email and amount required" });
+      }
+
+      // 1. Deduct coins from user
+      const coinUpdate = await usersCollection.updateOne(
         { email },
         { $inc: { coins: -parseFloat(amount) } }
       );
 
-      res.send(updateRes);
+      // 2. Log payment for task creation
+      const paymentEntry = {
+        email,
+        amountPaid: parseFloat(amount),
+        coins: coins ? parseInt(coins) : null,
+        transactionId: `task_${new Date().getTime()}`, // fake unique ID
+        type: "Task Payment",
+        date: new Date(),
+        taskId: taskId || null,
+      };
+
+      const paymentInsert = await paymentcollection.insertOne(paymentEntry);
+
+      res.send({ success: true, coinUpdate, paymentInsert });
     });
 
     // task related api
+    app.get("/tasks", async (req, res) => {
+      const email = req.query.email;
+      const tasks = await tasksCollection
+        .find({ created_by: email })
+        .sort({ completion_date: -1 })
+        .toArray();
+      res.send(tasks);
+    });
+
+    app.get("/available-tasks", async (req, res) => {
+      const workerEmail = req.query.email;
+
+      // Get IDs of tasks the worker has already submitted
+      const submissions = await submissionsCollection
+        .find({
+          worker_email: workerEmail,
+          status: { $in: ["pending", "approved"] },
+        })
+        .project({ task_id: 1 })
+        .toArray();
+
+      const submittedTaskIds = submissions.map((s) => new ObjectId(s.task_id));
+
+      // Fetch only tasks:
+      // - required_workers > 0
+      // - that the worker has NOT submitted
+      const tasks = await tasksCollection
+        .find({
+          required_workers: { $gt: 0 },
+          _id: { $nin: submittedTaskIds },
+        })
+        .sort({ completion_date: 1 })
+        .toArray();
+
+      res.send(tasks);
+    });
+
     app.post("/tasks", async (req, res) => {
       try {
         const task = req.body;
@@ -129,6 +188,72 @@ async function run() {
         console.error("Error posting task:", error);
         res.status(500).send({ message: "Task posting failed" });
       }
+    });
+
+    app.patch("/tasks/:id", async (req, res) => {
+      const id = req.params.id;
+      const updates = req.body;
+
+      const result = await tasksCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: updates }
+      );
+
+      res.send(result);
+    });
+
+    app.delete("/tasks/:id", async (req, res) => {
+      const id = req.params.id;
+      const { email, refundAmount } = req.body;
+
+      // Delete the task
+      const deleteRes = await tasksCollection.deleteOne({
+        _id: new ObjectId(id),
+      });
+
+      // Refund coins if needed
+      if (refundAmount > 0) {
+        await usersCollection.updateOne(
+          { email },
+          { $inc: { coins: parseFloat(refundAmount) } }
+        );
+
+        await paymentcollection.insertOne({
+          email,
+          amountPaid: parseFloat(refundAmount),
+          transactionId: `refund_${Date.now()}`,
+          type: "Task Refund",
+          date: new Date(),
+        });
+      }
+
+      res.send({ deleteRes });
+    });
+
+    // task submission api
+    app.get("/submissions", async (req, res) => {
+      const email = req.query.email;
+      const submissions = await submissionsCollection
+        .find({ worker_email: email })
+        .sort({ submission_date: -1 })
+        .toArray();
+      res.send(submissions);
+    });
+
+    app.post("/submissions", async (req, res) => {
+      const submission = req.body;
+      submission.status = "pending";
+      submission.submission_date = new Date();
+
+      const result = await submissionsCollection.insertOne(submission);
+
+      // Optionally decrease required_workers count immediately:
+      await tasksCollection.updateOne(
+        { _id: new ObjectId(submission.task_id) },
+        { $inc: { required_workers: -1 } }
+      );
+
+      res.send(result);
     });
 
     // payment api
@@ -147,25 +272,43 @@ async function run() {
     });
 
     app.post("/payments", async (req, res) => {
-      const { email, coinsPurchased, amountPaid, transactionId, date } =
-        req.body;
+      try {
+        const paymentData = req.body;
 
-      const paymentData = {
-        email,
-        coinsPurchased,
-        amountPaid,
-        transactionId,
-        date,
-      };
+        if (
+          !paymentData.email ||
+          !paymentData.amountPaid ||
+          !paymentData.transactionId
+        ) {
+          return res
+            .status(400)
+            .send({ success: false, message: "Missing required fields" });
+        }
 
-      const paymentRes = await paymentcollection.insertOne(paymentData);
+        // Save payment to collection
+        const paymentRes = await paymentcollection.insertOne(paymentData);
 
-      const userUpdate = await usersCollection.updateOne(
-        { email },
-        { $inc: { coins: coinsPurchased } }
-      );
+        // Optional: Handle coin increase if it's a coin purchase
+        if (
+          paymentData.type === "Coin Purchase" &&
+          paymentData.coinsPurchased
+        ) {
+          const userUpdate = await usersCollection.updateOne(
+            { email: paymentData.email },
+            { $inc: { coins: paymentData.coinsPurchased } }
+          );
 
-      res.send({ success: true, paymentRes, userUpdate });
+          return res.send({ success: true, paymentRes, userUpdate });
+        }
+
+        // Otherwise, no user update needed
+        res.send({ success: true, paymentRes });
+      } catch (error) {
+        console.error("Payment error:", error);
+        res
+          .status(500)
+          .send({ success: false, message: "Internal server error" });
+      }
     });
 
     app.post("/create-payment-intent", async (req, res) => {
