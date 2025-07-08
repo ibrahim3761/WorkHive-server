@@ -108,6 +108,28 @@ async function run() {
         res.status(500).json({ message: "Internal server error" });
       }
     });
+    app.patch("/users/deduct-coins", async (req, res) => {
+      const { email, amount } = req.body;
+
+      const updateRes = await usersCollection.updateOne(
+        { email },
+        { $inc: { coins: -parseFloat(amount) } }
+      );
+
+      res.send(updateRes);
+    });
+
+    // task related api
+    app.post("/tasks", async (req, res) => {
+      try {
+        const task = req.body;
+        const result = await tasksCollection.insertOne(task);
+        res.send(result);
+      } catch (error) {
+        console.error("Error posting task:", error);
+        res.status(500).send({ message: "Task posting failed" });
+      }
+    });
 
     // payment api
     app.get("/payments", async (req, res) => {
