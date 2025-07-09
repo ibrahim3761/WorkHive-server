@@ -122,14 +122,16 @@ async function run() {
     app.patch("/users/deduct-coins", async (req, res) => {
       const { email, amount, taskId, coins } = req.body;
 
-      if (!email || !amount) {
-        return res.status(400).send({ message: "Email and amount required" });
+      if (!email || amount == null || isNaN(amount)) {
+        return res
+          .status(400)
+          .send({ message: "Email and valid amount required" });
       }
 
       // 1. Deduct coins from user
       const coinUpdate = await usersCollection.updateOne(
         { email },
-        { $inc: { coins: -parseFloat(amount) } }
+        { $inc: { coins: -parseFloat(coins) } }
       );
 
       // 2. Log payment for task creation
@@ -147,7 +149,7 @@ async function run() {
 
       res.send({ success: true, coinUpdate, paymentInsert });
     });
-    
+
     app.patch("/users/:id", async (req, res) => {
       const id = req.params.id;
       const { role } = req.body;
@@ -165,6 +167,15 @@ async function run() {
     });
 
     // task related api
+
+    app.get("/tasks/all", async (req, res) => {
+      const tasks = await tasksCollection
+        .find()
+        .sort({ completion_date: -1 })
+        .toArray();
+      res.send(tasks);
+    });
+
     app.get("/tasks", async (req, res) => {
       const email = req.query.email;
       const tasks = await tasksCollection
@@ -226,6 +237,35 @@ async function run() {
     });
 
     app.delete("/tasks/:id", async (req, res) => {
+      const id = req.params.id;
+      const { email, refundAmount } = req.body;
+
+      // Delete the task
+      const deleteRes = await tasksCollection.deleteOne({
+        _id: new ObjectId(id),
+      });
+
+      // Refund coins if needed
+      if (refundAmount > 0) {
+        await usersCollection.updateOne(
+          { email },
+          { $inc: { coins: parseFloat(refundAmount) } }
+        );
+
+        await paymentcollection.insertOne({
+          email,
+          amountPaid: parseFloat(refundAmount / 10),
+          coins: parseFloat(refundAmount),
+          transactionId: `refund_${Date.now()}`,
+          type: "Task Refund",
+          date: new Date(),
+        });
+      }
+
+      res.send({ deleteRes });
+    });
+
+    app.delete("/task/admin/:id", async (req, res) => {
       const id = req.params.id;
       const { email, refundAmount } = req.body;
 
