@@ -50,7 +50,13 @@ async function run() {
       }
     });
 
-    // ✅ GET /users/:email - Fetch a single user by email
+    // USER RELATED API
+    app.get("/users", async (req, res) => {
+      const users = await usersCollection.find().toArray();
+      res.send(users);
+    });
+
+    // GET /users/:email - Fetch a single user by email
     app.get("/users/:email", async (req, res) => {
       try {
         const email = req.params.email;
@@ -140,6 +146,22 @@ async function run() {
       const paymentInsert = await paymentcollection.insertOne(paymentEntry);
 
       res.send({ success: true, coinUpdate, paymentInsert });
+    });
+    
+    app.patch("/users/:id", async (req, res) => {
+      const id = req.params.id;
+      const { role } = req.body;
+      const result = await usersCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: { role } }
+      );
+      res.send(result);
+    });
+
+    app.delete("/users/:id", async (req, res) => {
+      const id = req.params.id;
+      const result = await usersCollection.deleteOne({ _id: new ObjectId(id) });
+      res.send(result);
     });
 
     // task related api
