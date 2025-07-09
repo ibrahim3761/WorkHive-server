@@ -31,6 +31,7 @@ async function run() {
     const submissionsCollection = client
       .db("workHive")
       .collection("submission");
+    const withdrawalCollection = client.db("workHive").collection("withdraw");
     // user  api
     // GET /best-workers
     app.get("/best-workers", async (req, res) => {
@@ -220,7 +221,8 @@ async function run() {
 
         await paymentcollection.insertOne({
           email,
-          amountPaid: parseFloat(refundAmount),
+          amountPaid: parseFloat(refundAmount / 10),
+          coins: parseFloat(refundAmount),
           transactionId: `refund_${Date.now()}`,
           type: "Task Refund",
           date: new Date(),
@@ -239,6 +241,7 @@ async function run() {
         .toArray();
       res.send(submissions);
     });
+
     // Get pending submissions for this buyer
     app.get("/submissions/pending", async (req, res) => {
       try {
@@ -319,6 +322,40 @@ async function run() {
       res.send({ submissionUpdate, taskUpdate });
     });
 
+    // admin api
+    app.get("/admin-stats", async (req, res) => {
+      try {
+        const [workerCount, buyerCount, coinAgg, paymentAgg] =
+          await Promise.all([
+            usersCollection.countDocuments({ role: "Worker" }),
+            usersCollection.countDocuments({ role: "Buyer" }),
+            usersCollection
+              .aggregate([
+                { $group: { _id: null, totalCoins: { $sum: "$coins" } } },
+              ])
+              .toArray(),
+            paymentcollection
+              .aggregate([
+                { $group: { _id: null, totalPaid: { $sum: "$amountPaid" } } },
+              ])
+              .toArray(),
+          ]);
+
+        const totalCoins = coinAgg[0]?.totalCoins || 0;
+        const totalPayments = paymentAgg[0]?.totalPaid || 0;
+
+        res.send({
+          workerCount,
+          buyerCount,
+          totalCoins,
+          totalPayments,
+        });
+      } catch (error) {
+        console.error("Admin Stats Error:", error);
+        res.status(500).send({ error: "Failed to load admin stats" });
+      }
+    });
+
     // withdrawal related api
     app.post("/withdrawals", async (req, res) => {
       const {
@@ -343,6 +380,32 @@ async function run() {
 
       const result = await withdrawalCollection.insertOne(withdrawal);
       res.send(result);
+    });
+
+    // pending withdrawals get api
+    app.get("/withdrawals/pending", async (req, res) => {
+      const pending = await withdrawalCollection
+        .find({ status: "pending" })
+        .toArray();
+      res.send(pending);
+    });
+
+    // withdrawal apporval api
+    app.patch("/withdrawals/approve/:id", async (req, res) => {
+      const id = req.params.id;
+      const { email, coins } = req.body;
+
+      const updateWithdraw = await withdrawalCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: { status: "approved" } }
+      );
+
+      const updateUser = await usersCollection.updateOne(
+        { email },
+        { $inc: { coins: -coins } }
+      );
+
+      res.send({ updateWithdraw, updateUser });
     });
 
     // payment api
