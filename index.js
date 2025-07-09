@@ -32,6 +32,10 @@ async function run() {
       .db("workHive")
       .collection("submission");
     const withdrawalCollection = client.db("workHive").collection("withdraw");
+    const notificationCollection = client
+      .db("workHive")
+      .collection("notification");
+
     // user  api
     // GET /best-workers
     app.get("/best-workers", async (req, res) => {
@@ -344,6 +348,12 @@ async function run() {
         { _id: new ObjectId(submission.task_id) },
         { $inc: { required_workers: -1 } }
       );
+      await notificationCollection.insertOne({
+        message: `${submission.worker_name} submitted a task: "${submission.task_title}".`,
+        toEmail: submission.buyer_email,
+        actionRoute: "/dashboard/buyer-home",
+        time: new Date(),
+      });
 
       res.send(result);
     });
@@ -363,6 +373,13 @@ async function run() {
         { $inc: { coins } }
       );
 
+      await notificationCollection.insertOne({
+        message: `You have earned ${coins} coins from a buyer for completing a task.`,
+        toEmail: worker_email,
+        actionRoute: "/dashboard/worker-home",
+        time: new Date(),
+      });
+
       res.send({ submissionUpdate, coinUpdate });
     });
 
@@ -380,6 +397,18 @@ async function run() {
         { _id: new ObjectId(task_id) },
         { $inc: { required_workers: 1 } }
       );
+
+      // After updating status and increasing slot
+      const submission = await submissionsCollection.findOne({
+        _id: new ObjectId(id),
+      });
+
+      await notificationCollection.insertOne({
+        message: `Your submission for "${submission.task_title}" was rejected by ${submission.buyer_name}.`,
+        toEmail: submission.worker_email,
+        actionRoute: "/dashboard/worker-home",
+        time: new Date(),
+      });
 
       res.send({ submissionUpdate, taskUpdate });
     });
@@ -467,7 +496,24 @@ async function run() {
         { $inc: { coins: -coins } }
       );
 
+      await notificationCollection.insertOne({
+        message: `Your withdrawal request of ${coins} coins has been approved.`,
+        toEmail: email,
+        actionRoute: "/dashboard/worker-home",
+        time: new Date(),
+      });
+
       res.send({ updateWithdraw, updateUser });
+    });
+
+    // notification api
+    app.get("/notifications", async (req, res) => {
+      const { email } = req.query;
+      const notifications = await notificationCollection
+        .find({ toEmail: email })
+        .sort({ time: -1 })
+        .toArray();
+      res.send(notifications);
     });
 
     // payment api
