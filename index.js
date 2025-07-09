@@ -239,6 +239,33 @@ async function run() {
         .toArray();
       res.send(submissions);
     });
+    // Get pending submissions for this buyer
+    app.get("/submissions/pending", async (req, res) => {
+      try {
+        const buyerEmail = req.query.buyer;
+
+        // Step 1: Get task_ids created by this buyer
+        const buyerTasks = await tasksCollection
+          .find({ created_by: buyerEmail })
+          .project({ _id: 1 }) // only get task IDs
+          .toArray();
+
+        const taskIds = buyerTasks.map((task) => task._id.toString());
+
+        // Step 2: Get pending submissions for those tasks
+        const pendingSubmissions = await submissionsCollection
+          .find({
+            task_id: { $in: taskIds },
+            status: "pending",
+          })
+          .toArray();
+
+        res.send(pendingSubmissions);
+      } catch (error) {
+        console.error("Error fetching buyer's pending submissions:", error);
+        res.status(500).send({ message: "Server error" });
+      }
+    });
 
     app.post("/submissions", async (req, res) => {
       const submission = req.body;
@@ -254,6 +281,42 @@ async function run() {
       );
 
       res.send(result);
+    });
+
+    // Approve a submission
+    app.patch("/submissions/approve/:id", async (req, res) => {
+      const { id } = req.params;
+      const { coins, worker_email } = req.body;
+
+      const submissionUpdate = await submissionsCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: { status: "approved" } }
+      );
+
+      const coinUpdate = await usersCollection.updateOne(
+        { email: worker_email },
+        { $inc: { coins } }
+      );
+
+      res.send({ submissionUpdate, coinUpdate });
+    });
+
+    // Reject a submission
+    app.patch("/submissions/reject/:id", async (req, res) => {
+      const { id } = req.params;
+      const { task_id } = req.body;
+
+      const submissionUpdate = await submissionsCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: { status: "rejected" } }
+      );
+
+      const taskUpdate = await tasksCollection.updateOne(
+        { _id: new ObjectId(task_id) },
+        { $inc: { required_workers: 1 } }
+      );
+
+      res.send({ submissionUpdate, taskUpdate });
     });
 
     // payment api
