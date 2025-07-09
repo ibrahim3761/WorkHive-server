@@ -319,6 +319,32 @@ async function run() {
       res.send({ submissionUpdate, taskUpdate });
     });
 
+    // withdrawal related api
+    app.post("/withdrawals", async (req, res) => {
+      const {
+        worker_email,
+        worker_name,
+        withdrawal_coin,
+        withdrawal_amount,
+        payment_system,
+        account_number,
+      } = req.body;
+
+      const withdrawal = {
+        worker_email,
+        worker_name,
+        withdrawal_coin,
+        withdrawal_amount,
+        payment_system,
+        account_number,
+        withdraw_date: new Date(),
+        status: "pending",
+      };
+
+      const result = await withdrawalCollection.insertOne(withdrawal);
+      res.send(result);
+    });
+
     // payment api
     app.get("/payments", async (req, res) => {
       const email = req.query.email;
