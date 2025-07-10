@@ -44,7 +44,7 @@ async function run() {
       .collection("notification");
 
     // custom middlewares
-    const verfyFBtoken = async (req, res, next) => {
+    const verifyFBtoken = async (req, res, next) => {
       const authHeader = req.headers.authorization;
       if (!authHeader) {
         return res.status(401).send({ message: "unauthorized access" });
@@ -76,6 +76,30 @@ async function run() {
       }
       next();
     };
+    // buyer verification
+    const verifyBuyer = async (req, res, next) => {
+      const email = req.decoded.email;
+
+      const query = { email };
+      const user = await usersCollection.findOne(query);
+
+      if (!user || user.role !== "Buyer") {
+        return res.status(401).send({ message: "forbidden access" });
+      }
+      next();
+    };
+    // worker verification
+    const verifyWorker = async (req, res, next) => {
+      const email = req.decoded.email;
+
+      const query = { email };
+      const user = await usersCollection.findOne(query);
+
+      if (!user || user.role !== "Worker") {
+        return res.status(401).send({ message: "forbidden access" });
+      }
+      next();
+    };
 
     // user  api
     // GET /best-workers
@@ -96,16 +120,16 @@ async function run() {
     });
 
     // USER RELATED API
-    app.get("/users", verfyFBtoken, verifyAdmin, async (req, res) => {
+    app.get("/users", verifyFBtoken, verifyAdmin, async (req, res) => {
       const users = await usersCollection.find().toArray();
       res.send(users);
     });
 
     // GET /users/:email - Fetch a single user by email
-    app.get("/users/:email", async (req, res) => {
+    app.get("/users/:email", verifyFBtoken, async (req, res) => {
       try {
         const email = req.params.email;
-
+        
         const user = await usersCollection.findOne({ email });
 
         if (!user) {
@@ -164,7 +188,7 @@ async function run() {
       }
     });
 
-    app.patch("/users/deduct-coins", async (req, res) => {
+    app.patch("/users/deduct-coins", verifyFBtoken,verifyBuyer, async (req, res) => {
       const { email, amount, taskId, coins } = req.body;
 
       if (!email || amount == null || isNaN(amount)) {
@@ -186,7 +210,7 @@ async function run() {
         coins: coins ? parseInt(coins) : null,
         transactionId: `task_${new Date().getTime()}`, // fake unique ID
         type: "Task Payment",
-        date: new Date(),
+        date: new Date().toISOString(),
         taskId: taskId || null,
       };
 
@@ -195,7 +219,7 @@ async function run() {
       res.send({ success: true, coinUpdate, paymentInsert });
     });
 
-    app.patch("/users/:id", async (req, res) => {
+    app.patch("/users/:id", verifyFBtoken,verifyAdmin, async (req, res) => {
       const id = req.params.id;
       const { role } = req.body;
       const result = await usersCollection.updateOne(
@@ -205,7 +229,7 @@ async function run() {
       res.send(result);
     });
 
-    app.delete("/users/:id", async (req, res) => {
+    app.delete("/users/:id", verifyFBtoken,verifyAdmin, async (req, res) => {
       const id = req.params.id;
       const result = await usersCollection.deleteOne({ _id: new ObjectId(id) });
       res.send(result);
@@ -213,7 +237,7 @@ async function run() {
 
     // task related api
 
-    app.get("/tasks/all", async (req, res) => {
+    app.get("/tasks/all", verifyFBtoken,verifyAdmin, async (req, res) => {
       const tasks = await tasksCollection
         .find()
         .sort({ completion_date: -1 })
@@ -221,7 +245,7 @@ async function run() {
       res.send(tasks);
     });
 
-    app.get("/tasks", verfyFBtoken, async (req, res) => {
+    app.get("/tasks", verifyFBtoken, verifyBuyer, async (req, res) => {
       const email = req.query.email;
       if (req.decoded.email !== email) {
         return res.status(403).send({ message: "forbidden access" });
@@ -233,7 +257,7 @@ async function run() {
       res.send(tasks);
     });
 
-    app.get("/available-tasks", async (req, res) => {
+    app.get("/available-tasks", verifyFBtoken,verifyWorker ,async (req, res) => {
       const workerEmail = req.query.email;
 
       // Get IDs of tasks the worker has already submitted
@@ -261,7 +285,7 @@ async function run() {
       res.send(tasks);
     });
 
-    app.post("/tasks", async (req, res) => {
+    app.post("/tasks", verifyFBtoken,verifyBuyer, async (req, res) => {
       try {
         const task = req.body;
         const result = await tasksCollection.insertOne(task);
@@ -272,7 +296,7 @@ async function run() {
       }
     });
 
-    app.patch("/tasks/:id", async (req, res) => {
+    app.patch("/tasks/:id",verifyFBtoken,verifyBuyer, async (req, res) => {
       const id = req.params.id;
       const updates = req.body;
 
@@ -284,7 +308,7 @@ async function run() {
       res.send(result);
     });
 
-    app.delete("/tasks/:id", async (req, res) => {
+    app.delete("/tasks/:id",verifyFBtoken,verifyBuyer, async (req, res) => {
       const id = req.params.id;
       const { email, refundAmount } = req.body;
 
@@ -302,28 +326,32 @@ async function run() {
 
         await paymentcollection.insertOne({
           email,
-          amountPaid: parseFloat(refundAmount / 10),
+          amountPaid: -parseFloat(refundAmount / 10),
           coins: parseFloat(refundAmount),
           transactionId: `refund_${Date.now()}`,
           type: "Task Refund",
-          date: new Date(),
+          date: new Date().toISOString(),
         });
       }
 
       res.send({ deleteRes });
     });
 
-    app.delete("/task/admin/:id", async (req, res) => {
-      const id = req.params.id;
-      const { email, refundAmount } = req.body;
+    app.delete(
+      "/task/admin/:id",
+      verifyFBtoken,
+      verifyAdmin,
+      async (req, res) => {
+        const id = req.params.id;
+        const { email, refundAmount } = req.body;
 
-      // Delete the task
-      const deleteRes = await tasksCollection.deleteOne({
-        _id: new ObjectId(id),
-      });
+        // Delete the task
+        const deleteRes = await tasksCollection.deleteOne({
+          _id: new ObjectId(id),
+        });
 
-      // Refund coins if needed
-      if (refundAmount > 0) {
+        // Refund coins if needed
+
         await usersCollection.updateOne(
           { email },
           { $inc: { coins: parseFloat(refundAmount) } }
@@ -331,19 +359,19 @@ async function run() {
 
         await paymentcollection.insertOne({
           email,
-          amountPaid: parseFloat(refundAmount / 10),
+          amountPaid: -parseFloat(refundAmount / 10),
           coins: parseFloat(refundAmount),
           transactionId: `refund_${Date.now()}`,
           type: "Task Refund",
-          date: new Date(),
+          date: new Date().toISOString(),
         });
-      }
 
-      res.send({ deleteRes });
-    });
+        res.send({ deleteRes });
+      }
+    );
 
     // task submission api
-    app.get("/submissions", async (req, res) => {
+    app.get("/submissions", verifyFBtoken,verifyWorker, async (req, res) => {
       const email = req.query.email;
       const submissions = await submissionsCollection
         .find({ worker_email: email })
@@ -353,7 +381,7 @@ async function run() {
     });
 
     // Get pending submissions for this buyer
-    app.get("/submissions/pending", async (req, res) => {
+    app.get("/submissions/pending", verifyFBtoken,verifyBuyer, async (req, res) => {
       try {
         const buyerEmail = req.query.buyer;
 
@@ -380,7 +408,7 @@ async function run() {
       }
     });
 
-    app.post("/submissions", async (req, res) => {
+    app.post("/submissions", verifyFBtoken,verifyWorker, async (req, res) => {
       const submission = req.body;
       submission.status = "pending";
       submission.submission_date = new Date();
@@ -403,7 +431,7 @@ async function run() {
     });
 
     // Approve a submission
-    app.patch("/submissions/approve/:id", async (req, res) => {
+    app.patch("/submissions/approve/:id", verifyFBtoken,verifyBuyer, async (req, res) => {
       const { id } = req.params;
       const { coins, worker_email } = req.body;
 
@@ -428,7 +456,7 @@ async function run() {
     });
 
     // Reject a submission
-    app.patch("/submissions/reject/:id", async (req, res) => {
+    app.patch("/submissions/reject/:id", verifyFBtoken, verifyBuyer, async (req, res) => {
       const { id } = req.params;
       const { task_id } = req.body;
 
@@ -458,7 +486,7 @@ async function run() {
     });
 
     // admin api
-    app.get("/admin-stats", async (req, res) => {
+    app.get("/admin-stats", verifyFBtoken,verifyAdmin, async (req, res) => {
       try {
         const [workerCount, buyerCount, coinAgg, paymentAgg] =
           await Promise.all([
@@ -492,7 +520,7 @@ async function run() {
     });
 
     // withdrawal related api
-    app.post("/withdrawals", async (req, res) => {
+    app.post("/withdrawals", verifyFBtoken,verifyWorker, async (req, res) => {
       const {
         worker_email,
         worker_name,
@@ -518,7 +546,7 @@ async function run() {
     });
 
     // pending withdrawals get api
-    app.get("/withdrawals/pending", async (req, res) => {
+    app.get("/withdrawals/pending", verifyFBtoken,verifyAdmin, async (req, res) => {
       const pending = await withdrawalCollection
         .find({ status: "pending" })
         .toArray();
@@ -526,7 +554,7 @@ async function run() {
     });
 
     // withdrawal apporval api
-    app.patch("/withdrawals/approve/:id", async (req, res) => {
+    app.patch("/withdrawals/approve/:id", verifyFBtoken,verifyAdmin, async (req, res) => {
       const id = req.params.id;
       const { email, coins } = req.body;
 
@@ -551,7 +579,7 @@ async function run() {
     });
 
     // notification api
-    app.get("/notifications", async (req, res) => {
+    app.get("/notifications",verifyFBtoken, async (req, res) => {
       const { email } = req.query;
       const notifications = await notificationCollection
         .find({ toEmail: email })
@@ -561,7 +589,7 @@ async function run() {
     });
 
     // payment api
-    app.get("/payments", async (req, res) => {
+    app.get("/payments", verifyFBtoken,verifyBuyer, async (req, res) => {
       const email = req.query.email;
 
       if (!email) {
@@ -575,7 +603,7 @@ async function run() {
       res.send(payments);
     });
 
-    app.post("/payments", async (req, res) => {
+    app.post("/payments", verifyFBtoken,verifyBuyer, async (req, res) => {
       try {
         const paymentData = req.body;
 
@@ -595,11 +623,11 @@ async function run() {
         // Optional: Handle coin increase if it's a coin purchase
         if (
           paymentData.type === "Coin Purchase" &&
-          paymentData.coinsPurchased
+          paymentData.coins
         ) {
           const userUpdate = await usersCollection.updateOne(
             { email: paymentData.email },
-            { $inc: { coins: paymentData.coinsPurchased } }
+            { $inc: { coins: paymentData.coins } }
           );
 
           return res.send({ success: true, paymentRes, userUpdate });
@@ -615,7 +643,7 @@ async function run() {
       }
     });
 
-    app.post("/create-payment-intent", async (req, res) => {
+    app.post("/create-payment-intent",verifyFBtoken,verifyBuyer, async (req, res) => {
       const { amount } = req.body;
 
       const paymentIntent = await stripe.paymentIntents.create({
