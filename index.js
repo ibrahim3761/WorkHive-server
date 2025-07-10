@@ -5,9 +5,16 @@ const stripe = require("stripe")(process.env.PAYMENT_GATEWAY_KEY);
 const app = express();
 const port = process.env.PORT || 3000;
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
+const admin = require("firebase-admin");
 
 app.use(cors());
 app.use(express.json());
+
+const serviceAccount = require("./firebase-adminsdk-key.json");
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+});
 
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.thvamxq.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
 
@@ -36,6 +43,40 @@ async function run() {
       .db("workHive")
       .collection("notification");
 
+    // custom middlewares
+    const verfyFBtoken = async (req, res, next) => {
+      const authHeader = req.headers.authorization;
+      if (!authHeader) {
+        return res.status(401).send({ message: "unauthorized access" });
+      }
+      const token = authHeader.split(" ")[1];
+
+      if (!token) {
+        return res.status(401).send({ message: "unauthorized access" });
+      }
+
+      try {
+        const decoded = await admin.auth().verifyIdToken(token);
+        req.decoded = decoded;
+        next();
+      } catch (error) {
+        return res.status(403).send({ message: "forbidden access" });
+      }
+    };
+
+    // admin verification
+    const verifyAdmin = async (req, res, next) => {
+      const email = req.decoded.email;
+
+      const query = { email };
+      const user = await usersCollection.findOne(query);
+
+      if (!user || user.role !== "Admin") {
+        return res.status(401).send({ message: "forbidden access" });
+      }
+      next();
+    };
+
     // user  api
     // GET /best-workers
     app.get("/best-workers", async (req, res) => {
@@ -55,7 +96,7 @@ async function run() {
     });
 
     // USER RELATED API
-    app.get("/users", async (req, res) => {
+    app.get("/users", verfyFBtoken, verifyAdmin, async (req, res) => {
       const users = await usersCollection.find().toArray();
       res.send(users);
     });
@@ -180,8 +221,11 @@ async function run() {
       res.send(tasks);
     });
 
-    app.get("/tasks", async (req, res) => {
+    app.get("/tasks", verfyFBtoken, async (req, res) => {
       const email = req.query.email;
+      if (req.decoded.email !== email) {
+        return res.status(403).send({ message: "forbidden access" });
+      }
       const tasks = await tasksCollection
         .find({ created_by: email })
         .sort({ completion_date: -1 })
