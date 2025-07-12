@@ -10,9 +10,11 @@ const admin = require("firebase-admin");
 app.use(cors());
 app.use(express.json());
 
-const decodedKey = Buffer.from(process.env.FB_SERVICE_KEY, 'base64').toString('utf8')
+const decodedKey = Buffer.from(process.env.FB_SERVICE_KEY, "base64").toString(
+  "utf8"
+);
 
-const serviceAccount = JSON.parse(decodedKey)
+const serviceAccount = JSON.parse(decodedKey);
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
 });
@@ -130,7 +132,7 @@ async function run() {
     app.get("/users/:email", verifyFBtoken, async (req, res) => {
       try {
         const email = req.params.email;
-        
+
         const user = await usersCollection.findOne({ email });
 
         if (!user) {
@@ -189,38 +191,43 @@ async function run() {
       }
     });
 
-    app.patch("/users/deduct-coins", verifyFBtoken,verifyBuyer, async (req, res) => {
-      const { email, amount, taskId, coins } = req.body;
+    app.patch(
+      "/users/deduct-coins",
+      verifyFBtoken,
+      verifyBuyer,
+      async (req, res) => {
+        const { email, amount, taskId, coins } = req.body;
 
-      if (!email || amount == null || isNaN(amount)) {
-        return res
-          .status(400)
-          .send({ message: "Email and valid amount required" });
+        if (!email || amount == null || isNaN(amount)) {
+          return res
+            .status(400)
+            .send({ message: "Email and valid amount required" });
+        }
+
+        // 1. Deduct coins from user
+        const coinUpdate = await usersCollection.updateOne(
+          { email },
+          { $inc: { coins: -parseFloat(coins) } }
+        );
+
+        // 2. Log payment for task creation
+        const paymentEntry = {
+          email,
+          amountPaid: parseFloat(amount),
+          coins: coins ? parseInt(coins) : null,
+          transactionId: `task_${new Date().getTime()}`, // fake unique ID
+          type: "Task Payment",
+          date: new Date().toISOString(),
+          taskId: taskId || null,
+        };
+
+        const paymentInsert = await paymentcollection.insertOne(paymentEntry);
+
+        res.send({ success: true, coinUpdate, paymentInsert });
       }
+    );
 
-      // 1. Deduct coins from user
-      const coinUpdate = await usersCollection.updateOne(
-        { email },
-        { $inc: { coins: -parseFloat(coins) } }
-      );
-
-      // 2. Log payment for task creation
-      const paymentEntry = {
-        email,
-        amountPaid: parseFloat(amount),
-        coins: coins ? parseInt(coins) : null,
-        transactionId: `task_${new Date().getTime()}`, // fake unique ID
-        type: "Task Payment",
-        date: new Date().toISOString(),
-        taskId: taskId || null,
-      };
-
-      const paymentInsert = await paymentcollection.insertOne(paymentEntry);
-
-      res.send({ success: true, coinUpdate, paymentInsert });
-    });
-
-    app.patch("/users/:id", verifyFBtoken,verifyAdmin, async (req, res) => {
+    app.patch("/users/:id", verifyFBtoken, verifyAdmin, async (req, res) => {
       const id = req.params.id;
       const { role } = req.body;
       const result = await usersCollection.updateOne(
@@ -230,7 +237,7 @@ async function run() {
       res.send(result);
     });
 
-    app.delete("/users/:id", verifyFBtoken,verifyAdmin, async (req, res) => {
+    app.delete("/users/:id", verifyFBtoken, verifyAdmin, async (req, res) => {
       const id = req.params.id;
       const result = await usersCollection.deleteOne({ _id: new ObjectId(id) });
       res.send(result);
@@ -238,7 +245,7 @@ async function run() {
 
     // task related api
 
-    app.get("/tasks/all", verifyFBtoken,verifyAdmin, async (req, res) => {
+    app.get("/tasks/all", verifyFBtoken, verifyAdmin, async (req, res) => {
       const tasks = await tasksCollection
         .find()
         .sort({ completion_date: -1 })
@@ -258,35 +265,50 @@ async function run() {
       res.send(tasks);
     });
 
-    app.get("/available-tasks", verifyFBtoken,verifyWorker ,async (req, res) => {
-      const workerEmail = req.query.email;
+    app.get(
+      "/available-tasks",
+      verifyFBtoken,
+      verifyWorker,
+      async (req, res) => {
+        const workerEmail = req.query.email;
 
-      // Get IDs of tasks the worker has already submitted
-      const submissions = await submissionsCollection
-        .find({
-          worker_email: workerEmail,
-          status: { $in: ["pending", "approved"] },
-        })
-        .project({ task_id: 1 })
-        .toArray();
+        // Get IDs of tasks the worker has already submitted
+        const submissions = await submissionsCollection
+          .find({
+            worker_email: workerEmail,
+            status: { $in: ["pending", "approved"] },
+          })
+          .project({ task_id: 1 })
+          .toArray();
 
-      const submittedTaskIds = submissions.map((s) => new ObjectId(s.task_id));
+        const submittedTaskIds = submissions.map(
+          (s) => new ObjectId(s.task_id)
+        );
 
-      // Fetch only tasks:
-      // - required_workers > 0
-      // - that the worker has NOT submitted
-      const tasks = await tasksCollection
-        .find({
-          required_workers: { $gt: 0 },
-          _id: { $nin: submittedTaskIds },
-        })
-        .sort({ completion_date: 1 })
-        .toArray();
+        // Fetch only tasks:
+        // - required_workers > 0
+        // - that the worker has NOT submitted
+        const tasks = await tasksCollection
+          .find({
+            required_workers: { $gt: 0 },
+            _id: { $nin: submittedTaskIds },
+          })
+          .sort({ completion_date: 1 })
+          .toArray();
 
-      res.send(tasks);
+        res.send(tasks);
+      }
+    );
+    app.get("/tasks/details/:id", verifyFBtoken,verifyWorker, async (req, res) => {
+      const { id } = req.params;
+      const task = await tasksCollection.findOne({ _id: new ObjectId(id) });
+      if (!task) {
+        return res.status(404).send({ message: "Task not found" });
+      }
+      res.send(task);
     });
 
-    app.post("/tasks", verifyFBtoken,verifyBuyer, async (req, res) => {
+    app.post("/tasks", verifyFBtoken, verifyBuyer, async (req, res) => {
       try {
         const task = req.body;
         const result = await tasksCollection.insertOne(task);
@@ -297,7 +319,7 @@ async function run() {
       }
     });
 
-    app.patch("/tasks/:id",verifyFBtoken,verifyBuyer, async (req, res) => {
+    app.patch("/tasks/:id", verifyFBtoken, verifyBuyer, async (req, res) => {
       const id = req.params.id;
       const updates = req.body;
 
@@ -309,7 +331,7 @@ async function run() {
       res.send(result);
     });
 
-    app.delete("/tasks/:id",verifyFBtoken,verifyBuyer, async (req, res) => {
+    app.delete("/tasks/:id", verifyFBtoken, verifyBuyer, async (req, res) => {
       const id = req.params.id;
       const { email, refundAmount } = req.body;
 
@@ -372,7 +394,7 @@ async function run() {
     );
 
     // task submission api
-    app.get("/submissions", verifyFBtoken,verifyWorker, async (req, res) => {
+    app.get("/submissions", verifyFBtoken, verifyWorker, async (req, res) => {
       const email = req.query.email;
       const submissions = await submissionsCollection
         .find({ worker_email: email })
@@ -382,34 +404,39 @@ async function run() {
     });
 
     // Get pending submissions for this buyer
-    app.get("/submissions/pending", verifyFBtoken,verifyBuyer, async (req, res) => {
-      try {
-        const buyerEmail = req.query.buyer;
+    app.get(
+      "/submissions/pending",
+      verifyFBtoken,
+      verifyBuyer,
+      async (req, res) => {
+        try {
+          const buyerEmail = req.query.buyer;
 
-        // Step 1: Get task_ids created by this buyer
-        const buyerTasks = await tasksCollection
-          .find({ created_by: buyerEmail })
-          .project({ _id: 1 }) // only get task IDs
-          .toArray();
+          // Step 1: Get task_ids created by this buyer
+          const buyerTasks = await tasksCollection
+            .find({ created_by: buyerEmail })
+            .project({ _id: 1 }) // only get task IDs
+            .toArray();
 
-        const taskIds = buyerTasks.map((task) => task._id.toString());
+          const taskIds = buyerTasks.map((task) => task._id.toString());
 
-        // Step 2: Get pending submissions for those tasks
-        const pendingSubmissions = await submissionsCollection
-          .find({
-            task_id: { $in: taskIds },
-            status: "pending",
-          })
-          .toArray();
+          // Step 2: Get pending submissions for those tasks
+          const pendingSubmissions = await submissionsCollection
+            .find({
+              task_id: { $in: taskIds },
+              status: "pending",
+            })
+            .toArray();
 
-        res.send(pendingSubmissions);
-      } catch (error) {
-        console.error("Error fetching buyer's pending submissions:", error);
-        res.status(500).send({ message: "Server error" });
+          res.send(pendingSubmissions);
+        } catch (error) {
+          console.error("Error fetching buyer's pending submissions:", error);
+          res.status(500).send({ message: "Server error" });
+        }
       }
-    });
+    );
 
-    app.post("/submissions", verifyFBtoken,verifyWorker, async (req, res) => {
+    app.post("/submissions", verifyFBtoken, verifyWorker, async (req, res) => {
       const submission = req.body;
       submission.status = "pending";
       submission.submission_date = new Date();
@@ -432,62 +459,72 @@ async function run() {
     });
 
     // Approve a submission
-    app.patch("/submissions/approve/:id", verifyFBtoken,verifyBuyer, async (req, res) => {
-      const { id } = req.params;
-      const { coins, worker_email } = req.body;
+    app.patch(
+      "/submissions/approve/:id",
+      verifyFBtoken,
+      verifyBuyer,
+      async (req, res) => {
+        const { id } = req.params;
+        const { coins, worker_email } = req.body;
 
-      const submissionUpdate = await submissionsCollection.updateOne(
-        { _id: new ObjectId(id) },
-        { $set: { status: "approved" } }
-      );
+        const submissionUpdate = await submissionsCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: { status: "approved" } }
+        );
 
-      const coinUpdate = await usersCollection.updateOne(
-        { email: worker_email },
-        { $inc: { coins } }
-      );
+        const coinUpdate = await usersCollection.updateOne(
+          { email: worker_email },
+          { $inc: { coins } }
+        );
 
-      await notificationCollection.insertOne({
-        message: `You have earned ${coins} coins from a buyer for completing a task.`,
-        toEmail: worker_email,
-        actionRoute: "/dashboard/worker-home",
-        time: new Date(),
-      });
+        await notificationCollection.insertOne({
+          message: `You have earned ${coins} coins from a buyer for completing a task.`,
+          toEmail: worker_email,
+          actionRoute: "/dashboard/worker-home",
+          time: new Date(),
+        });
 
-      res.send({ submissionUpdate, coinUpdate });
-    });
+        res.send({ submissionUpdate, coinUpdate });
+      }
+    );
 
     // Reject a submission
-    app.patch("/submissions/reject/:id", verifyFBtoken, verifyBuyer, async (req, res) => {
-      const { id } = req.params;
-      const { task_id } = req.body;
+    app.patch(
+      "/submissions/reject/:id",
+      verifyFBtoken,
+      verifyBuyer,
+      async (req, res) => {
+        const { id } = req.params;
+        const { task_id } = req.body;
 
-      const submissionUpdate = await submissionsCollection.updateOne(
-        { _id: new ObjectId(id) },
-        { $set: { status: "rejected" } }
-      );
+        const submissionUpdate = await submissionsCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: { status: "rejected" } }
+        );
 
-      const taskUpdate = await tasksCollection.updateOne(
-        { _id: new ObjectId(task_id) },
-        { $inc: { required_workers: 1 } }
-      );
+        const taskUpdate = await tasksCollection.updateOne(
+          { _id: new ObjectId(task_id) },
+          { $inc: { required_workers: 1 } }
+        );
 
-      // After updating status and increasing slot
-      const submission = await submissionsCollection.findOne({
-        _id: new ObjectId(id),
-      });
+        // After updating status and increasing slot
+        const submission = await submissionsCollection.findOne({
+          _id: new ObjectId(id),
+        });
 
-      await notificationCollection.insertOne({
-        message: `Your submission for "${submission.task_title}" was rejected by ${submission.buyer_name}.`,
-        toEmail: submission.worker_email,
-        actionRoute: "/dashboard/worker-home",
-        time: new Date(),
-      });
+        await notificationCollection.insertOne({
+          message: `Your submission for "${submission.task_title}" was rejected by ${submission.buyer_name}.`,
+          toEmail: submission.worker_email,
+          actionRoute: "/dashboard/worker-home",
+          time: new Date(),
+        });
 
-      res.send({ submissionUpdate, taskUpdate });
-    });
+        res.send({ submissionUpdate, taskUpdate });
+      }
+    );
 
     // admin api
-    app.get("/admin-stats", verifyFBtoken,verifyAdmin, async (req, res) => {
+    app.get("/admin-stats", verifyFBtoken, verifyAdmin, async (req, res) => {
       try {
         const [workerCount, buyerCount, coinAgg, paymentAgg] =
           await Promise.all([
@@ -521,7 +558,7 @@ async function run() {
     });
 
     // withdrawal related api
-    app.post("/withdrawals", verifyFBtoken,verifyWorker, async (req, res) => {
+    app.post("/withdrawals", verifyFBtoken, verifyWorker, async (req, res) => {
       const {
         worker_email,
         worker_name,
@@ -547,40 +584,50 @@ async function run() {
     });
 
     // pending withdrawals get api
-    app.get("/withdrawals/pending", verifyFBtoken,verifyAdmin, async (req, res) => {
-      const pending = await withdrawalCollection
-        .find({ status: "pending" })
-        .toArray();
-      res.send(pending);
-    });
+    app.get(
+      "/withdrawals/pending",
+      verifyFBtoken,
+      verifyAdmin,
+      async (req, res) => {
+        const pending = await withdrawalCollection
+          .find({ status: "pending" })
+          .toArray();
+        res.send(pending);
+      }
+    );
 
     // withdrawal apporval api
-    app.patch("/withdrawals/approve/:id", verifyFBtoken,verifyAdmin, async (req, res) => {
-      const id = req.params.id;
-      const { email, coins } = req.body;
+    app.patch(
+      "/withdrawals/approve/:id",
+      verifyFBtoken,
+      verifyAdmin,
+      async (req, res) => {
+        const id = req.params.id;
+        const { email, coins } = req.body;
 
-      const updateWithdraw = await withdrawalCollection.updateOne(
-        { _id: new ObjectId(id) },
-        { $set: { status: "approved" } }
-      );
+        const updateWithdraw = await withdrawalCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: { status: "approved" } }
+        );
 
-      const updateUser = await usersCollection.updateOne(
-        { email },
-        { $inc: { coins: -coins } }
-      );
+        const updateUser = await usersCollection.updateOne(
+          { email },
+          { $inc: { coins: -coins } }
+        );
 
-      await notificationCollection.insertOne({
-        message: `Your withdrawal request of ${coins} coins has been approved.`,
-        toEmail: email,
-        actionRoute: "/dashboard/worker-home",
-        time: new Date(),
-      });
+        await notificationCollection.insertOne({
+          message: `Your withdrawal request of ${coins} coins has been approved.`,
+          toEmail: email,
+          actionRoute: "/dashboard/worker-home",
+          time: new Date(),
+        });
 
-      res.send({ updateWithdraw, updateUser });
-    });
+        res.send({ updateWithdraw, updateUser });
+      }
+    );
 
     // notification api
-    app.get("/notifications",verifyFBtoken, async (req, res) => {
+    app.get("/notifications", verifyFBtoken, async (req, res) => {
       const { email } = req.query;
       const notifications = await notificationCollection
         .find({ toEmail: email })
@@ -590,7 +637,7 @@ async function run() {
     });
 
     // payment api
-    app.get("/payments", verifyFBtoken,verifyBuyer, async (req, res) => {
+    app.get("/payments", verifyFBtoken, verifyBuyer, async (req, res) => {
       const email = req.query.email;
 
       if (!email) {
@@ -604,7 +651,7 @@ async function run() {
       res.send(payments);
     });
 
-    app.post("/payments", verifyFBtoken,verifyBuyer, async (req, res) => {
+    app.post("/payments", verifyFBtoken, verifyBuyer, async (req, res) => {
       try {
         const paymentData = req.body;
 
@@ -622,10 +669,7 @@ async function run() {
         const paymentRes = await paymentcollection.insertOne(paymentData);
 
         // Optional: Handle coin increase if it's a coin purchase
-        if (
-          paymentData.type === "Coin Purchase" &&
-          paymentData.coins
-        ) {
+        if (paymentData.type === "Coin Purchase" && paymentData.coins) {
           const userUpdate = await usersCollection.updateOne(
             { email: paymentData.email },
             { $inc: { coins: paymentData.coins } }
@@ -644,19 +688,24 @@ async function run() {
       }
     });
 
-    app.post("/create-payment-intent",verifyFBtoken,verifyBuyer, async (req, res) => {
-      const { amount } = req.body;
+    app.post(
+      "/create-payment-intent",
+      verifyFBtoken,
+      verifyBuyer,
+      async (req, res) => {
+        const { amount } = req.body;
 
-      const paymentIntent = await stripe.paymentIntents.create({
-        amount,
-        currency: "usd",
-        payment_method_types: ["card"],
-      });
+        const paymentIntent = await stripe.paymentIntents.create({
+          amount,
+          currency: "usd",
+          payment_method_types: ["card"],
+        });
 
-      res.send({
-        clientSecret: paymentIntent.client_secret,
-      });
-    });
+        res.send({
+          clientSecret: paymentIntent.client_secret,
+        });
+      }
+    );
 
     // Send a ping to confirm a successful connection
     // await client.db("admin").command({ ping: 1 });
