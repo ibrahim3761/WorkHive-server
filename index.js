@@ -190,6 +190,18 @@ async function run() {
         res.status(500).json({ message: "Internal server error" });
       }
     });
+    // PATCH /users/update/:email
+    app.patch("/users/update/:email", verifyFBtoken, async (req, res) => {
+      const email = req.params.email;
+      const { name, photo } = req.body;
+
+      const result = await usersCollection.updateOne(
+        { email },
+        { $set: { name, photo } }
+      );
+
+      res.send(result);
+    });
 
     app.patch(
       "/users/deduct-coins",
@@ -299,14 +311,19 @@ async function run() {
         res.send(tasks);
       }
     );
-    app.get("/tasks/details/:id", verifyFBtoken,verifyWorker, async (req, res) => {
-      const { id } = req.params;
-      const task = await tasksCollection.findOne({ _id: new ObjectId(id) });
-      if (!task) {
-        return res.status(404).send({ message: "Task not found" });
+    app.get(
+      "/tasks/details/:id",
+      verifyFBtoken,
+      verifyWorker,
+      async (req, res) => {
+        const { id } = req.params;
+        const task = await tasksCollection.findOne({ _id: new ObjectId(id) });
+        if (!task) {
+          return res.status(404).send({ message: "Task not found" });
+        }
+        res.send(task);
       }
-      res.send(task);
-    });
+    );
 
     app.post("/tasks", verifyFBtoken, verifyBuyer, async (req, res) => {
       try {
